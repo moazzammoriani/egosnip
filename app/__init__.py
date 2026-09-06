@@ -1,0 +1,2 @@
+"""GoPro Snipper application package."""
+

@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>GoPro Snipper</title>
+  <link rel="stylesheet" href="/static/style.css?v=2">
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <p class="eyebrow">LOCAL WORKSTATION</p>
+      <h1>GoPro Snipper</h1>
+    </div>
+    <div class="source-tools">
+      <div class="source-picker">
+        <label for="sourceSelect">Source recording</label>
+        <select id="sourceSelect"><option value="">Loading media…</option></select>
+      </div>
+      <button id="uploadButton" class="secondary upload-button" type="button">Upload MP4s</button>
+      <input id="uploadInput" type="file" accept="video/mp4,.mp4" multiple hidden>
+    </div>
+  </header>
+
+  <main>
+    <section id="uploadPanel" class="upload-panel panel" tabindex="0">
+      <div>
+        <p class="eyebrow">MEDIA LIBRARY</p>
+        <strong>Drop GoPro MP4s here</strong>
+        <small>Files are streamed into the dedicated local <code>media/</code> folder.</small>
+      </div>
+      <div id="uploadStatus" class="upload-status">No uploads running</div>
+    </section>
+
+    <section id="emptyState" class="empty panel">
+      <h2>No GoPro recording selected</h2>
+      <p>Place an MP4 directly in <code>MEDIA_DIR</code>, then refresh this page.</p>
+      <button id="refreshFiles" class="secondary">Refresh sources</button>
+    </section>
+
+    <div id="workspace" hidden>
+      <section class="source-summary panel">
+        <div><span>Source</span><strong id="sourceName">—</strong></div>
+        <div><span>Duration</span><strong id="sourceDuration">—</strong></div>
+        <div><span>Format</span><strong id="sourceFormat">—</strong></div>
+        <div><span>GPMF</span><strong id="sourceGpmd">—</strong></div>
+        <div><span>Proxy</span><strong id="proxyStatus">—</strong></div>
+      </section>
+
+      <section class="player-panel panel">
+        <div class="video-shell">
+          <video id="video" controls preload="metadata"></video>
+          <div id="proxyOverlay" class="proxy-overlay" hidden>Generating 720p review proxy…<small>This may take several minutes for a long source.</small></div>
+        </div>
+        <div class="time-readout">Current <strong id="currentTime">00:00.000</strong></div>
+      </section>
+
+      <section class="mark-panel panel">
+        <div class="task-field">
+          <label for="taskLabel">Task label</label>
+          <input id="taskLabel" type="text" maxlength="240" placeholder="e.g. Sewing seam">
+        </div>
+        <div class="time-fields">
+          <label>IN <input id="inTime" type="text" inputmode="decimal" value="00:00.000"></label>
+          <span>→</span>
+          <label>OUT <input id="outTime" type="text" inputmode="decimal" value="00:00.000"></label>
+          <div class="marked-duration">Duration <strong id="markedDuration">00:00.000</strong></div>
+        </div>
+        <div class="button-row">
+          <button id="setIn" class="secondary"><kbd>I</kbd> Set IN</button>
+          <button id="setOut" class="secondary"><kbd>O</kbd> Set OUT</button>
+          <button id="addClip"><kbd>Enter</kbd> <span id="addClipText">Add Clip</span></button>
+          <button id="cancelEdit" class="ghost" hidden>Cancel edit</button>
+        </div>
+        <p id="formError" class="error" role="alert"></p>
+      </section>
+
+      <section class="timeline-panel panel">
+        <div class="section-heading">
+          <div><p class="eyebrow">SOURCE TIMELINE</p><h2>Harvested ranges</h2></div>
+          <span id="clipCount" class="count">0 clips</span>
+        </div>
+        <div id="timeline" class="timeline" aria-label="Marked clips timeline">
+          <div class="timeline-axis"><span>0</span><span id="timelineEnd">—</span></div>
+          <div id="timelineClips" class="timeline-clips"></div>
+          <div id="playhead" class="playhead"></div>
+        </div>
+      </section>
+
+      <section class="clips-panel panel">
+        <div class="section-heading">
+          <div><p class="eyebrow">CLIPS</p><h2>Independent task clips</h2></div>
+          <span class="hint">Click any row or timeline range to select</span>
+        </div>
+        <div id="clipList" class="clip-list"></div>
+      </section>
+
+      <section class="export-panel panel">
+        <div>
+          <p class="eyebrow">IMU EXPORT SETTINGS</p>
+          <label class="check-row">
+            <input id="retainPreZero" type="checkbox">
+            <span><strong>Retain one pre-zero IMU sample</strong><small>Keep the single sensor sample immediately before the first displayed video frame for interpolation.</small></span>
+          </label>
+        </div>
+        <div class="export-actions">
+          <button id="exportAll" class="export-button">Export All Clips</button>
+          <p id="exportProgress" class="export-progress">Ready</p>
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <footer>Space play/pause · I set IN · O set OUT · Enter add · ←/→ seek 1 second</footer>
+  <script src="/static/app.js?v=4" defer></script>
+</body>
+</html>
