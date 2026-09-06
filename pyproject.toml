@@ -1,5 +1,5 @@
 [project]
-name = "gopro-snipper"
+name = "egosnip"
 version = "0.1.0"
 description = "Local multi-clip GoPro snipping with synchronized IMU extraction"
 readme = "README.md"

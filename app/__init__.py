@@ -1,2 +1,1 @@
-"""GoPro Snipper application package."""
-
+"""EgoSnip application package."""

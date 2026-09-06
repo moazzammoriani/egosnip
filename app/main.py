@@ -217,7 +217,7 @@ def create_app(media_dir: Path | None = None) -> FastAPI:
     project_catalog = ExportProjectCatalog(library.exports_root)
     jobs = ExportJobs(library, projects)
     proxy_jobs = ProxyJobs(library)
-    app = FastAPI(title="GoPro Snipper", version="0.1.0")
+    app = FastAPI(title="EgoSnip", version="0.1.0")
     app.state.library = library
     app.state.projects = projects
     app.state.jobs = jobs

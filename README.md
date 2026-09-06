@@ -1,4 +1,4 @@
-# GoPro Snipper V1
+# EgoSnip V1
 
 A local, browser-based tool for reviewing one GoPro recording once, marking any number of independent task clips, losslessly stream-copying them, and exporting synchronized ACCL/GYRO CSV files derived from the untouched source recording.
 
