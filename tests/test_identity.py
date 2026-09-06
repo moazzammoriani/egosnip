@@ -1,6 +1,8 @@
 import json
 import os
 import re
+import sys
+from types import SimpleNamespace
 from pathlib import Path
 
 import pytest
@@ -145,6 +147,28 @@ def test_registry_write_is_atomic(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     DeviceRegistry(path).register("C0001")
     assert replaced and replaced[-1][1] == path.resolve()
     assert not list(path.parent.glob("*.tmp"))
+
+
+def test_device_registry_uses_windows_file_locking(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = []
+    fake_msvcrt = SimpleNamespace(
+        LK_LOCK=1,
+        LK_UNLCK=2,
+        locking=lambda file_descriptor, mode, size: calls.append(
+            (file_descriptor, mode, size)
+        ),
+    )
+    monkeypatch.setattr(os, "name", "nt")
+    monkeypatch.setitem(sys.modules, "msvcrt", fake_msvcrt)
+    registry = DeviceRegistry(tmp_path / "devices.json")
+
+    with registry._process_lock():
+        pass
+
+    assert [mode for _, mode, _ in calls] == [fake_msvcrt.LK_LOCK, fake_msvcrt.LK_UNLCK]
+    assert all(size == 1 for _, _, size in calls)
 
 
 @pytest.mark.parametrize(

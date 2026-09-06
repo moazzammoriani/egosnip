@@ -30,6 +30,35 @@ MEDIA_DIR=/absolute/path/to/media uv run uvicorn app.main:app --reload
 
 Open <http://127.0.0.1:8000>. `python -m app` prints the URL at startup and creates `/path/to/egosnip/media/`. Set an absolute `MEDIA_DIR` only when you want the library somewhere else.
 
+### Windows (PowerShell)
+
+On Windows 10/11, install Git, uv, and an FFmpeg build from WinGet:
+
+```powershell
+winget install --id Git.Git -e
+winget install --id astral-sh.uv -e
+winget install --id Gyan.FFmpeg -e
+```
+
+Open a new PowerShell window so the updated `PATH` is loaded, then clone/copy the repository—including the version-controlled `devices.json`—and run:
+
+```powershell
+cd C:\path\to\egosnip
+uv sync
+ffmpeg -version
+ffprobe -version
+uv run python -m app
+```
+
+Open <http://127.0.0.1:8000>. To keep large media on another drive:
+
+```powershell
+$env:MEDIA_DIR = "D:\EgoSnipMedia"
+uv run python -m app
+```
+
+EgoSnip uses native Windows file locking for `devices.json`; no WSL environment is required.
+
 Use **Upload MP4s** or drop multiple MP4s onto the Media Library panel. Each raw video body is streamed to one temporary file, checked with FFprobe, assigned a physical device and recording identity from its original GoPro metadata, and atomically moved to `MEDIA_DIR/sources/<DEVICE_ID>/<SOURCE_ID>/<ORIGINAL_FILENAME>`. Same-named files from different cameras can coexist; existing files are never overwritten. Existing MP4s directly inside `MEDIA_DIR` are also discovered. Backend-generated IDs are used in URLs, and client-provided filesystem paths are never accepted.
 
 ## Operator workflow
