@@ -4,13 +4,12 @@ import csv
 import json
 import math
 import os
-import re
-import unicodedata
 from pathlib import Path
 from typing import Any
 
 from .media import MediaError, MediaLibrary, Source, detect_streams, ffprobe_json, probe_media, run_command
 from .models import Clip, ProjectState
+from .projects import ExportProjectCatalog, project_slug
 from .telemetry import (
     MasterTelemetry,
     SensorData,
@@ -24,15 +23,8 @@ from .telemetry import (
 TIMESTAMP_ALIGNMENT_TOLERANCE_S = 0.0001
 
 
-def sanitize_task_label(label: str, max_length: int = 80) -> str:
-    normalized = unicodedata.normalize("NFKD", label).encode("ascii", "ignore").decode("ascii")
-    slug = re.sub(r"[^a-zA-Z0-9]+", "_", normalized.lower()).strip("_")
-    slug = re.sub(r"_+", "_", slug)[:max_length].rstrip("_")
-    return slug or "untitled_task"
-
-
 def clip_basename(source: Source, clip: Clip) -> str:
-    return f"{source.source_id}_{clip.clip_index:03d}_{sanitize_task_label(clip.task_label)}"
+    return f"{source.source_id}_{clip.clip_index:03d}"
 
 
 def find_first_source_video_frame_at_or_after(source_path: Path, requested_start_s: float) -> float:
@@ -119,6 +111,7 @@ def _is_monotonic(sensor: SensorData) -> bool:
 def build_manifest(
     *,
     source: Source,
+    project: ProjectState,
     clip: Clip,
     source_metadata: dict[str, Any],
     output_metadata: dict[str, Any],
@@ -138,7 +131,16 @@ def build_manifest(
     first_source = min((s.source_timestamp_s for s in all_samples), default=None)
     relative = [s.source_timestamp_s - actual_start_s for s in all_samples]
     return {
+        "manifest_schema_version": "1.0",
+        "project_name": project.project_name,
+        "project_slug": project_slug(project.project_name),
+        "device_id": source.device_id,
+        "camera_serial_number": source.camera_serial_number,
+        "camera_model": source.camera_model,
+        "camera_firmware": source.camera_firmware,
         "source_file": source.filename,
+        "source_file_stem": source.source_file_stem,
+        "recording_id": source.recording_id,
         "source_id": source.source_id,
         "clip_id": clip.id,
         "clip_index": clip.clip_index,
@@ -195,10 +197,17 @@ class ClipExporter:
     def __init__(self, library: MediaLibrary, telemetry_cache: TelemetryCache):
         self.library = library
         self.telemetry_cache = telemetry_cache
+        self.project_catalog = ExportProjectCatalog(library.exports_root)
 
-    def _output_dir(self, source: Source, clip: Clip) -> tuple[Path, str]:
+    def _output_dir(self, source: Source, project: ProjectState, clip: Clip) -> tuple[Path, str]:
         base = clip_basename(source, clip)
-        output_dir = self.library.exports_root / source.source_id / base
+        exports_root = self.library.exports_root.resolve()
+        namespace = self.project_catalog.ensure(project.project_name)
+        output_dir = (exports_root / namespace["project_slug"] / source.source_id / base).resolve()
+        try:
+            output_dir.relative_to(exports_root)
+        except ValueError as exc:
+            raise ValueError("Export path escapes the configured exports directory") from exc
         output_dir.mkdir(parents=True, exist_ok=True)
         return output_dir, base
 
@@ -243,7 +252,7 @@ class ClipExporter:
         source_metadata = self.library.metadata(source)
         if not (0 <= clip.requested_start_s < clip.requested_end_s <= source_metadata["duration"] + 1e-6):
             raise ValueError("Clip interval is outside the source duration")
-        output_dir, base = self._output_dir(source, clip)
+        output_dir, base = self._output_dir(source, project, clip)
         video_path = output_dir / f"{base}.mp4"
         actual_start = find_first_source_video_frame_at_or_after(source.path, clip.requested_start_s)
         ffmpeg_args = self._ffmpeg_export(source, clip, source_metadata, video_path)
@@ -353,6 +362,7 @@ class ClipExporter:
 
         manifest = build_manifest(
             source=source,
+            project=project,
             clip=clip,
             source_metadata=source_metadata,
             output_metadata=output_metadata,
@@ -385,10 +395,21 @@ class ClipExporter:
             "manifest": manifest,
         }
 
-    def write_failure_manifest(self, source: Source, clip: Clip, message: str) -> dict[str, Any]:
-        output_dir, base = self._output_dir(source, clip)
+    def write_failure_manifest(
+        self, source: Source, project: ProjectState, clip: Clip, message: str
+    ) -> dict[str, Any]:
+        output_dir, base = self._output_dir(source, project, clip)
         manifest = {
+            "manifest_schema_version": "1.0",
+            "project_name": project.project_name,
+            "project_slug": project_slug(project.project_name),
+            "device_id": source.device_id,
+            "camera_serial_number": source.camera_serial_number,
+            "camera_model": source.camera_model,
+            "camera_firmware": source.camera_firmware,
             "source_file": source.filename,
+            "source_file_stem": source.source_file_stem,
+            "recording_id": source.recording_id,
             "source_id": source.source_id,
             "clip_id": clip.id,
             "clip_index": clip.clip_index,

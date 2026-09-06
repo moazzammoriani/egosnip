@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>GoPro Snipper</title>
-  <link rel="stylesheet" href="/static/style.css?v=2">
+  <link rel="stylesheet" href="/static/style.css?v=6">
 </head>
 <body>
   <header class="topbar">
@@ -12,7 +12,7 @@
       <p class="eyebrow">LOCAL WORKSTATION</p>
       <h1>GoPro Snipper</h1>
     </div>
-    <div class="source-tools">
+    <div id="sourceTools" class="source-tools" hidden>
       <div class="source-picker">
         <label for="sourceSelect">Source recording</label>
         <select id="sourceSelect"><option value="">Loading media…</option></select>
@@ -23,7 +23,7 @@
   </header>
 
   <main>
-    <section id="uploadPanel" class="upload-panel panel" tabindex="0">
+    <section id="uploadPanel" class="upload-panel panel" tabindex="0" hidden>
       <div>
         <p class="eyebrow">MEDIA LIBRARY</p>
         <strong>Drop GoPro MP4s here</strong>
@@ -32,7 +32,22 @@
       <div id="uploadStatus" class="upload-status">No uploads running</div>
     </section>
 
-    <section id="emptyState" class="empty panel">
+    <section class="project-library-panel panel">
+      <div>
+        <p class="eyebrow">PROJECTS</p>
+        <strong>Export project</strong>
+        <small>Create a new namespace or choose one found in <code>exports/</code>.</small>
+      </div>
+      <div class="project-picker">
+        <label for="projectSelect">Existing projects</label>
+        <div class="project-choice">
+          <select id="projectSelect"><option value="">Loading projects…</option></select>
+          <button id="createProjectButton" class="secondary" type="button">New Project</button>
+        </div>
+      </div>
+    </section>
+
+    <section id="emptyState" class="empty panel" hidden>
       <h2>No GoPro recording selected</h2>
       <p>Place an MP4 directly in <code>MEDIA_DIR</code>, then refresh this page.</p>
       <button id="refreshFiles" class="secondary">Refresh sources</button>
@@ -40,11 +55,26 @@
 
     <div id="workspace" hidden>
       <section class="source-summary panel">
-        <div><span>Source</span><strong id="sourceName">—</strong></div>
+        <div><span>Source file</span><strong id="sourceName">—</strong></div>
+        <div><span>Source ID</span><strong id="sourceIdentity">—</strong></div>
+        <div><span>Device</span><strong id="deviceId">—</strong></div>
+        <div><span>GoPro serial</span><strong id="cameraSerial">—</strong></div>
         <div><span>Duration</span><strong id="sourceDuration">—</strong></div>
         <div><span>Format</span><strong id="sourceFormat">—</strong></div>
         <div><span>GPMF</span><strong id="sourceGpmd">—</strong></div>
         <div><span>Proxy</span><strong id="proxyStatus">—</strong></div>
+      </section>
+
+      <section class="project-panel panel">
+        <div class="project-field">
+          <label for="projectName">Assigned Project Name <span aria-hidden="true">*</span></label>
+          <input id="projectName" type="text" maxlength="240" required placeholder="e.g. Claru Textile Pilot">
+        </div>
+        <div class="project-destination">
+          <span>EXPORT NAMESPACE</span>
+          <code id="projectSlugPreview">Enter a project name</code>
+        </div>
+        <p id="projectError" class="error" role="alert"></p>
       </section>
 
       <section class="player-panel panel">
@@ -111,7 +141,22 @@
     </div>
   </main>
 
-  <footer>Space play/pause · I set IN · O set OUT · Enter add · ←/→ seek 1 second</footer>
-  <script src="/static/app.js?v=4" defer></script>
+  <dialog id="createProjectDialog" class="project-dialog">
+    <form id="createProjectForm">
+      <p class="eyebrow">NEW EXPORT PROJECT</p>
+      <h2>Create Project</h2>
+      <label for="newProjectName">Project Name</label>
+      <input id="newProjectName" type="text" maxlength="240" required value="New Project">
+      <p class="dialog-slug">Folder: <code id="newProjectSlugPreview">new_project</code></p>
+      <p id="createProjectError" class="error" role="alert"></p>
+      <div class="dialog-actions">
+        <button id="cancelCreateProject" class="ghost" type="button">Cancel</button>
+        <button type="submit">Create and Select</button>
+      </div>
+    </form>
+  </dialog>
+
+  <footer id="shortcutFooter" hidden>Space play/pause · I set IN · O set OUT · Enter add · ←/→ seek 1 second</footer>
+  <script src="/static/app.js?v=9" defer></script>
 </body>
 </html>

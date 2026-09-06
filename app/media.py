@@ -11,19 +11,26 @@ from fractions import Fraction
 from pathlib import Path
 from typing import Any, Callable
 
+from .identity import (
+    DeviceRegistry,
+    IdentityError,
+    SourceIdentity,
+    resolve_source_identity,
+    source_stem_from_filename,
+)
+
 
 class MediaError(RuntimeError):
     pass
 
 
-def source_id_from_filename(filename: str) -> str:
-    stem = Path(filename).stem
-    safe = re.sub(r"[^A-Za-z0-9_-]+", "_", stem).strip("_-")
-    return safe or "source"
+DEFAULT_DEVICE_REGISTRY_PATH = Path(__file__).resolve().parent.parent / "devices.json"
 
 
-def safe_file_id(filename: str) -> str:
-    return hashlib.sha256(filename.encode("utf-8")).hexdigest()[:20]
+def safe_file_id(recording_fingerprint: str) -> str:
+    if not re.fullmatch(r"[a-f0-9]{64}", recording_fingerprint):
+        raise ValueError("A full SHA-256 recording fingerprint is required")
+    return recording_fingerprint[:20]
 
 
 def parse_rate(value: str | None) -> float | None:
@@ -112,6 +119,13 @@ class Source:
     file_id: str
     filename: str
     source_id: str
+    source_file_stem: str
+    recording_id: str
+    recording_fingerprint: str
+    device_id: str
+    camera_serial_number: str
+    camera_model: str | None
+    camera_firmware: str | None
     path: Path
     cache_dir: Path
 
@@ -120,13 +134,21 @@ class MediaLibrary:
     _proxy_locks_guard = threading.Lock()
     _proxy_locks: dict[str, threading.Lock] = {}
 
-    def __init__(self, media_dir: Path):
+    def __init__(self, media_dir: Path, device_registry_path: Path | None = None):
         self.media_dir = media_dir.expanduser().resolve()
         self.media_dir.mkdir(parents=True, exist_ok=True)
         if not self.media_dir.is_dir():
             raise ValueError(f"MEDIA_DIR is not a directory: {self.media_dir}")
         self.cache_root = self.media_dir / ".snipper_cache"
         self.exports_root = self.media_dir / "exports"
+        self.sources_root = self.media_dir / "sources"
+        self.identity_root = self.media_dir / ".egosnip"
+        self.identity_cache_root = self.identity_root / "source_identities"
+        self.device_registry = DeviceRegistry(
+            device_registry_path or DEFAULT_DEVICE_REGISTRY_PATH
+        )
+        self._identity_lock = threading.RLock()
+        self.discovery_errors: list[dict[str, str]] = []
 
     def _inside_media_dir(self, path: Path) -> bool:
         try:
@@ -135,19 +157,147 @@ class MediaLibrary:
         except ValueError:
             return False
 
+    def _candidate_paths(self) -> list[Path]:
+        paths = [
+            path
+            for path in self.media_dir.iterdir()
+            if path.is_file() and path.suffix.lower() == ".mp4"
+        ]
+        if self.sources_root.is_dir():
+            paths.extend(
+                path
+                for path in self.sources_root.glob("*/*/*")
+                if path.is_file() and path.suffix.lower() == ".mp4"
+            )
+        return sorted(set(paths), key=lambda path: os.fspath(path).lower())
+
+    def _identity_cache_path(self, path: Path) -> Path:
+        relative = path.resolve().relative_to(self.media_dir)
+        key = hashlib.sha256(os.fspath(relative).encode("utf-8")).hexdigest()
+        return self.identity_cache_root / f"{key}.json"
+
+    @staticmethod
+    def _path_fingerprint(path: Path) -> dict[str, int]:
+        stat = path.stat()
+        return {"size": stat.st_size, "mtime_ns": stat.st_mtime_ns}
+
+    def _write_identity_cache(self, path: Path, identity: SourceIdentity) -> None:
+        cache_path = self._identity_cache_path(path)
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "path_fingerprint": self._path_fingerprint(path),
+            "identity": identity.as_dict(),
+        }
+        temp = cache_path.with_suffix(f".{threading.get_ident()}.tmp")
+        temp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        temp.replace(cache_path)
+
+    def _identity_for(
+        self,
+        path: Path,
+        filename: str,
+        *,
+        use_cache: bool = True,
+        write_cache: bool = True,
+    ) -> SourceIdentity:
+        with self._identity_lock:
+            cache_path = self._identity_cache_path(path)
+            if use_cache and cache_path.exists():
+                try:
+                    payload = json.loads(cache_path.read_text(encoding="utf-8"))
+                    if payload.get("path_fingerprint") == self._path_fingerprint(path):
+                        try:
+                            identity = SourceIdentity.from_dict(payload["identity"])
+                        except IdentityError:
+                            identity = None
+                        if identity is None:
+                            raise ValueError("Cached source identity is invalid")
+                        device_id = self.device_registry.register(
+                            identity.camera_serial_number,
+                            camera_model=identity.camera_model,
+                            camera_firmware=identity.camera_firmware,
+                        )
+                        if device_id != identity.device_id:
+                            raise IdentityError("Cached source identity conflicts with the device registry")
+                        return identity
+                except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+                    pass
+            identity = resolve_source_identity(path, filename, self.device_registry)
+            if write_cache:
+                self._write_identity_cache(path, identity)
+            return identity
+
+    def _source_from_identity(self, path: Path, identity: SourceIdentity) -> Source:
+        return Source(
+            file_id=identity.file_id,
+            filename=identity.source_file,
+            source_id=identity.source_id,
+            source_file_stem=identity.source_file_stem,
+            recording_id=identity.recording_id,
+            recording_fingerprint=identity.recording_fingerprint,
+            device_id=identity.device_id,
+            camera_serial_number=identity.camera_serial_number,
+            camera_model=identity.camera_model,
+            camera_firmware=identity.camera_firmware,
+            path=path.resolve(),
+            cache_dir=self.cache_root / f"{identity.source_id}_{identity.file_id[:8]}",
+        )
+
     def sources(self) -> list[Source]:
         found: list[Source] = []
-        for path in sorted(self.media_dir.iterdir(), key=lambda p: p.name.lower()):
-            if not path.is_file() or path.suffix.lower() != ".mp4":
-                continue
+        errors: list[dict[str, str]] = []
+        for path in self._candidate_paths():
             resolved = path.resolve()
-            if not self._inside_media_dir(resolved):
+            if not self._inside_media_dir(resolved) or path.is_symlink():
                 continue
-            filename = path.name
-            sid = source_id_from_filename(filename)
-            fid = safe_file_id(filename)
-            found.append(Source(fid, filename, sid, resolved, self.cache_root / f"{sid}_{fid[:8]}"))
-        return found
+            try:
+                identity = self._identity_for(resolved, path.name)
+                found.append(self._source_from_identity(resolved, identity))
+            except IdentityError as exc:
+                errors.append({
+                    "filename": path.name,
+                    "identity_status": "unresolved",
+                    "error": str(exc),
+                })
+
+        by_source_id: dict[str, list[Source]] = {}
+        for source in found:
+            by_source_id.setdefault(source.source_id, []).append(source)
+        collisions = {key for key, values in by_source_id.items() if len(values) > 1}
+        for source_id in sorted(collisions):
+            errors.append({
+                "filename": source_id,
+                "identity_status": "collision",
+                "error": "Multiple files resolve to the same source ID; none were exposed",
+            })
+        self.discovery_errors = errors
+        return [source for source in found if source.source_id not in collisions]
+
+    def ingest_upload(self, temp_path: Path, filename: str) -> Source:
+        identity = self._identity_for(
+            temp_path, filename, use_cache=False, write_cache=False
+        )
+        source_dir = (
+            self.sources_root / identity.device_id / identity.source_id
+        ).resolve()
+        try:
+            source_dir.relative_to(self.sources_root.resolve())
+        except ValueError as exc:
+            raise MediaError("Resolved source storage path escapes MEDIA_DIR") from exc
+        destination = source_dir / filename
+        if source_dir.exists() or destination.exists():
+            raise MediaError(
+                f"Recording {identity.source_id} already exists or has an 8-character ID collision; source was not overwritten"
+            )
+        try:
+            source_dir.mkdir(parents=True)
+        except FileExistsError as exc:
+            raise MediaError(
+                f"Recording {identity.source_id} was ingested concurrently; source was not overwritten"
+            ) from exc
+        temp_path.replace(destination)
+        self._write_identity_cache(destination, identity)
+        return self._source_from_identity(destination, identity)
 
     def get(self, file_id: str) -> Source:
         if not re.fullmatch(r"[a-f0-9]{20}", file_id):
@@ -189,6 +339,12 @@ class MediaLibrary:
             "id": source.file_id,
             "filename": source.filename,
             "source_id": source.source_id,
+            "source_file_stem": source.source_file_stem,
+            "recording_id": source.recording_id,
+            "device_id": source.device_id,
+            "camera_serial_number": source.camera_serial_number,
+            "camera_model": source.camera_model,
+            "camera_firmware": source.camera_firmware,
             **{key: metadata[key] for key in (
                 "duration", "width", "height", "fps", "video_codec",
                 "audio_codec", "gpmd_present",

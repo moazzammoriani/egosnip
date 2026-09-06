@@ -2,10 +2,10 @@
 
 ## Project Structure & Module Organization
 
-- `app/` contains the FastAPI backend. `main.py` defines HTTP endpoints and background jobs; `media.py` handles safe file discovery, FFprobe, and proxies; `export.py` performs stream-copy cuts and QC; `telemetry.py` extracts/caches IMU data; `projects.py` persists project JSON; `models.py` defines Pydantic schemas.
+- `app/` contains the FastAPI backend. `main.py` defines HTTP endpoints and background jobs; `identity.py` parses GoPro identity and maintains the device registry; `migrate_identity.py` is the explicit one-time legacy naming migration; `media.py` handles source storage/discovery, FFprobe, and proxies; `export.py` performs stream-copy cuts and QC; `telemetry.py` extracts/caches IMU data; `projects.py` persists per-source state and catalogs export-project folders; `models.py` defines Pydantic schemas.
 - `static/` contains the vanilla HTML, CSS, and JavaScript interface served by FastAPI.
 - `tests/` contains pytest unit, synthetic-media, and optional GoPro integration tests.
-- `media/` is the default runtime library. Its recordings, `.snipper_cache/`, and `exports/` are generated data and must not be committed.
+- `devices.json` is the repository-level physical-camera registry and is version-controlled so deployments share stable `GP-` assignments. `devices.json.lock` is transient and ignored. `media/` is the default runtime library; its `sources/`, `.egosnip/`, `.snipper_cache/`, and `exports/` contents are generated data and must not be committed.
 
 ## Build, Test, and Development Commands
 
@@ -21,7 +21,7 @@ MEDIA_DIR=media uv run pytest -q -m integration
 
 ## Coding Style & Naming Conventions
 
-Use four-space indentation and type hints in Python. Prefer small, direct modules and subprocess argument arrays; never build shell commands from filenames. Use `snake_case` for Python names, `camelCase` for browser JavaScript, and descriptive DOM IDs. Clip output names follow `<SOURCE_ID>_<NNN>_<sanitized_task_label>`. No formatter is currently enforced, so keep changes consistent with surrounding code and run Python compilation plus tests.
+Use four-space indentation and type hints in Python. Prefer small, direct modules and subprocess argument arrays; never build shell commands from filenames. Use `snake_case` for Python names, `camelCase` for browser JavaScript, and descriptive DOM IDs. Source IDs follow `<DEVICE_ID>_<ORIGINAL_STEM>_<RECORDING_ID>`; clip output names append `<NNN>` beneath `exports/<project_slug>/<SOURCE_ID>/`. No formatter is currently enforced, so keep changes consistent with surrounding code and run Python compilation plus tests.
 
 ## Testing Guidelines
 

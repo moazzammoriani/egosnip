@@ -16,11 +16,11 @@ FIXTURE = MEDIA_DIR / "GX010005.MP4"
 
 @pytest.mark.integration
 @pytest.mark.skipif(not FIXTURE.is_file(), reason="GX010005.MP4 is not present in MEDIA_DIR")
-def test_known_hero13_t0_and_prezero_sample() -> None:
+def test_known_hero13_t0_and_prezero_sample(tmp_path: Path) -> None:
     t0 = find_first_source_video_frame_at_or_after(FIXTURE, 120.0)
     assert t0 == pytest.approx(120.003217, abs=0.02)
 
-    library = MediaLibrary(MEDIA_DIR)
+    library = MediaLibrary(MEDIA_DIR, tmp_path / "devices.json")
     source = next(item for item in library.sources() if item.filename == FIXTURE.name)
     master = TelemetryCache(library).load_or_extract(source)
     accel = slice_sensor(master.accelerometer, t0, t0 + 1.0, True)
@@ -32,19 +32,23 @@ def test_known_hero13_t0_and_prezero_sample() -> None:
 @pytest.mark.integration
 @pytest.mark.skipif(not FIXTURE.is_file(), reason="GX010005.MP4 is not present in MEDIA_DIR")
 def test_real_hero13_stream_copy_imu_and_qc(tmp_path: Path) -> None:
-    library = MediaLibrary(MEDIA_DIR)
+    library = MediaLibrary(MEDIA_DIR, tmp_path / "devices.json")
     library.exports_root = tmp_path / "exports"
     source = next(item for item in library.sources() if item.filename == FIXTURE.name)
     clip = Clip(
-        id="GX010005_900",
+        id=f"{source.source_id}_900",
         clip_index=900,
         task_label="Integration validation",
         requested_start_s=120.0,
         requested_end_s=122.0,
     )
     project = ProjectState(
+        project_name="Integration Validation",
         source_file=source.filename,
         source_id=source.source_id,
+        device_id=source.device_id,
+        camera_serial_number=source.camera_serial_number,
+        recording_id=source.recording_id,
         imu_settings=IMUSettings(retain_one_pre_zero_sample=True),
         clips=[clip],
         next_clip_index=901,

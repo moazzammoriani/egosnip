@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "next_device_number": 3,
+  "devices": {
+    "C3531325778769": {
+      "device_id": "GP-000001",
+      "camera_model": "HERO13 Black",
+      "camera_firmware": "H24.01.02.10.00",
+      "first_seen": "2026-09-06T17:17:21Z",
+      "last_seen": "2026-09-06T17:41:58Z"
+    },
+    "C3531325783683": {
+      "device_id": "GP-000002",
+      "camera_model": "HERO13 Black",
+      "camera_firmware": "H24.01.02.10.00",
+      "first_seen": "2026-09-06T17:44:33Z",
+      "last_seen": "2026-09-06T17:44:54Z"
+    }
+  }
+}

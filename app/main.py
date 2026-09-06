@@ -13,9 +13,10 @@ from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 
 from .export import ClipExporter
-from .media import MediaError, MediaLibrary, probe_media, safe_file_id
-from .models import ExportRequest, ProjectState
-from .projects import ProjectStore
+from .identity import IdentityError
+from .media import MediaError, MediaLibrary, probe_media
+from .models import CreateProjectRequest, ExportRequest, ProjectState
+from .projects import ExportProjectCatalog, ProjectStore, project_slug
 from .telemetry import TelemetryCache, TelemetryError
 
 
@@ -33,6 +34,7 @@ class ExportJobs:
 
     def start(self, source_file_id: str, project: ProjectState, clip_ids: list[str] | None) -> str:
         source = self.library.get(source_file_id)
+        project_slug(project.project_name)
         selected = [clip for clip in project.clips if clip_ids is None or clip.id in clip_ids]
         if clip_ids is not None:
             missing = set(clip_ids) - {clip.id for clip in selected}
@@ -120,7 +122,7 @@ class ExportJobs:
                     )
                 except Exception as exc:
                     message = str(exc)
-                    result = self.exporter.write_failure_manifest(source, clip, message)
+                    result = self.exporter.write_failure_manifest(source, project, clip, message)
                 self._update_clip(
                     job_id,
                     clip.id,
@@ -212,6 +214,7 @@ def create_app(media_dir: Path | None = None) -> FastAPI:
     configured_dir = media_dir or Path(os.environ.get("MEDIA_DIR", Path.cwd() / "media"))
     library = MediaLibrary(configured_dir)
     projects = ProjectStore()
+    project_catalog = ExportProjectCatalog(library.exports_root)
     jobs = ExportJobs(library, projects)
     proxy_jobs = ProxyJobs(library)
     app = FastAPI(title="GoPro Snipper", version="0.1.0")
@@ -240,6 +243,7 @@ def create_app(media_dir: Path | None = None) -> FastAPI:
                 files.append(library.public_metadata(source))
             except MediaError as exc:
                 errors.append({"filename": source.filename, "error": str(exc)})
+        errors.extend(library.discovery_errors)
         return {"files": files, "errors": errors, "media_dir": os.fspath(library.media_dir)}
 
     @app.post("/api/uploads", status_code=201)
@@ -251,9 +255,6 @@ def create_app(media_dir: Path | None = None) -> FastAPI:
             or Path(filename).suffix.lower() != ".mp4"
         ):
             raise HTTPException(status_code=422, detail="Only .mp4 files can be uploaded")
-        destination = library.media_dir / filename
-        if destination.exists():
-            raise HTTPException(status_code=409, detail=f"{filename} already exists in the media library")
         uploads_dir = library.media_dir / ".uploads"
         uploads_dir.mkdir(parents=True, exist_ok=True)
         partial = uploads_dir / f"{uuid.uuid4().hex}.partial"
@@ -265,8 +266,12 @@ def create_app(media_dir: Path | None = None) -> FastAPI:
                 await run_in_threadpool(probe_media, partial)
             except MediaError as exc:
                 raise HTTPException(status_code=422, detail=f"{filename} is not a readable video: {exc}")
-            partial.replace(destination)
-            source = library.get(safe_file_id(filename))
+            try:
+                source = await run_in_threadpool(library.ingest_upload, partial, filename)
+            except IdentityError as exc:
+                raise HTTPException(status_code=422, detail=str(exc))
+            except MediaError as exc:
+                raise HTTPException(status_code=409, detail=str(exc))
             metadata = library.public_metadata(source)
             return {"status": "uploaded", "file": metadata}
         finally:
@@ -293,6 +298,19 @@ def create_app(media_dir: Path | None = None) -> FastAPI:
         if not proxy.is_file():
             raise HTTPException(status_code=404, detail="Proxy has not been generated")
         return FileResponse(proxy, media_type="video/mp4")
+
+    @app.get("/api/projects")
+    def list_projects() -> dict[str, Any]:
+        return {"projects": project_catalog.list()}
+
+    @app.post("/api/projects", status_code=201)
+    def create_project(request: CreateProjectRequest) -> dict[str, str]:
+        try:
+            return project_catalog.ensure(request.project_name, require_new=True)
+        except FileExistsError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+        except (OSError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
 
     @app.get("/api/projects/{file_id}", response_model=ProjectState)
     def get_project(file_id: str) -> ProjectState:

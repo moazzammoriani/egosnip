@@ -1,14 +1,20 @@
 const $ = (selector) => document.querySelector(selector);
 
 const els = {
-  sourceSelect: $("#sourceSelect"), refreshFiles: $("#refreshFiles"), empty: $("#emptyState"), workspace: $("#workspace"),
+  sourceTools: $("#sourceTools"), sourceSelect: $("#sourceSelect"), refreshFiles: $("#refreshFiles"), empty: $("#emptyState"), workspace: $("#workspace"),
   uploadButton: $("#uploadButton"), uploadInput: $("#uploadInput"), uploadPanel: $("#uploadPanel"), uploadStatus: $("#uploadStatus"),
-  sourceName: $("#sourceName"), sourceDuration: $("#sourceDuration"), sourceFormat: $("#sourceFormat"), sourceGpmd: $("#sourceGpmd"),
+  sourceName: $("#sourceName"), sourceIdentity: $("#sourceIdentity"), deviceId: $("#deviceId"), cameraSerial: $("#cameraSerial"),
+  sourceDuration: $("#sourceDuration"), sourceFormat: $("#sourceFormat"), sourceGpmd: $("#sourceGpmd"),
   proxyStatus: $("#proxyStatus"), proxyOverlay: $("#proxyOverlay"), video: $("#video"), currentTime: $("#currentTime"),
+  projectSelect: $("#projectSelect"), createProjectButton: $("#createProjectButton"), projectName: $("#projectName"),
+  projectSlugPreview: $("#projectSlugPreview"), projectError: $("#projectError"), createProjectDialog: $("#createProjectDialog"),
+  createProjectForm: $("#createProjectForm"), newProjectName: $("#newProjectName"), newProjectSlugPreview: $("#newProjectSlugPreview"),
+  createProjectError: $("#createProjectError"), cancelCreateProject: $("#cancelCreateProject"),
   taskLabel: $("#taskLabel"), inTime: $("#inTime"), outTime: $("#outTime"), markedDuration: $("#markedDuration"),
   setIn: $("#setIn"), setOut: $("#setOut"), addClip: $("#addClip"), addClipText: $("#addClipText"), cancelEdit: $("#cancelEdit"),
   formError: $("#formError"), timeline: $("#timeline"), timelineClips: $("#timelineClips"), timelineEnd: $("#timelineEnd"), playhead: $("#playhead"),
   clipCount: $("#clipCount"), clipList: $("#clipList"), retainPreZero: $("#retainPreZero"), exportAll: $("#exportAll"), exportProgress: $("#exportProgress"),
+  shortcutFooter: $("#shortcutFooter"),
 };
 
 let sources = [];
@@ -18,6 +24,8 @@ let selectedClipId = null;
 let editingClipId = null;
 let saveTimer = null;
 let exportStatuses = {};
+let existingProjects = [];
+let activeProject = null;
 
 function formatTime(seconds) {
   if (!Number.isFinite(seconds)) return "00:00.000";
@@ -61,18 +69,24 @@ async function loadFiles(preferredId = null) {
     for (const item of sources) {
       const option = document.createElement("option");
       option.value = item.id;
-      option.textContent = `${item.filename} · ${formatTime(item.duration)}`;
+      option.textContent = `${item.filename} · ${item.device_id} · ${item.recording_id} · ${formatTime(item.duration)}`;
       els.sourceSelect.append(option);
     }
-    const wanted = preferredId && sources.some((item) => item.id === preferredId) ? preferredId : sources[0]?.id;
+    const wanted = preferredId && sources.some((item) => item.id === preferredId) ? preferredId : null;
     if (wanted) {
       els.sourceSelect.value = wanted;
       await selectSource(wanted);
     } else {
       els.empty.hidden = false;
       els.workspace.hidden = true;
+      els.empty.querySelector("p").textContent = sources.length
+        ? "Choose a source recording above to begin marking clips."
+        : "Upload one or more GoPro MP4s to begin.";
     }
-    if (payload.errors.length) els.formError.textContent = payload.errors.map((item) => `${item.filename}: ${item.error}`).join(" · ");
+    if (payload.errors.length) {
+      els.uploadStatus.className = "upload-status error";
+      els.uploadStatus.textContent = payload.errors.map((item) => `${item.filename}: ${item.error}`).join(" · ");
+    }
   } catch (error) {
     els.empty.hidden = false;
     els.workspace.hidden = true;
@@ -81,6 +95,7 @@ async function loadFiles(preferredId = null) {
 }
 
 async function selectSource(fileId) {
+  if (source && project) await saveProject();
   source = sources.find((item) => item.id === fileId) || null;
   if (!source) {
     els.workspace.hidden = true;
@@ -95,12 +110,23 @@ async function selectSource(fileId) {
   els.empty.hidden = true;
   els.workspace.hidden = false;
   els.sourceName.textContent = source.filename;
+  els.sourceIdentity.textContent = source.source_id;
+  els.sourceIdentity.title = source.source_id;
+  els.deviceId.textContent = source.device_id;
+  els.cameraSerial.textContent = source.camera_serial_number;
   els.sourceDuration.textContent = formatTime(source.duration);
   els.sourceFormat.textContent = `${source.width}×${source.height} · ${source.fps?.toFixed(2) || "?"} fps · ${source.video_codec || "?"}`;
   els.sourceGpmd.textContent = source.gpmd_present ? "✓ present" : "✕ unavailable";
   els.sourceGpmd.style.color = source.gpmd_present ? "var(--success)" : "var(--danger)";
   els.timelineEnd.textContent = formatTime(source.duration);
   project = await api(`/api/projects/${source.id}`);
+  if (activeProject && project.project_name !== activeProject.project_name) {
+    project.project_name = activeProject.project_name;
+    await saveProject();
+  }
+  els.projectName.value = project.project_name;
+  updateProjectSlugPreview();
+  els.projectError.textContent = "";
   els.retainPreZero.checked = project.imu_settings.retain_one_pre_zero_sample;
   resetForm(false);
   render();
@@ -198,18 +224,123 @@ async function uploadFiles(fileList) {
 
 function projectPayload() {
   return {
+    project_name: project.project_name,
     source_file: project.source_file,
     source_id: project.source_id,
+    device_id: project.device_id,
+    camera_serial_number: project.camera_serial_number,
+    recording_id: project.recording_id,
     imu_settings: project.imu_settings,
     clips: project.clips,
     next_clip_index: project.next_clip_index,
   };
 }
 
+function previewProjectSlug(value) {
+  return value.normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-zA-Z0-9]+/g, "_")
+    .toLowerCase()
+    .replace(/_+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 80)
+    .replace(/_+$/g, "");
+}
+
+function updateProjectSlugPreview() {
+  const slug = previewProjectSlug(els.projectName.value);
+  els.projectSlugPreview.textContent = slug ? `exports/${slug}/` : "Enter a valid project name";
+  syncProjectSelection(slug);
+}
+
+function syncProjectSelection(slug = previewProjectSlug(project?.project_name || "")) {
+  els.projectSelect.value = existingProjects.some((item) => item.project_slug === slug) ? slug : "";
+}
+
+async function loadExistingProjects(preferredSlug = null) {
+  const payload = await api("/api/projects");
+  existingProjects = payload.projects;
+  els.projectSelect.replaceChildren();
+  const placeholder = document.createElement("option");
+  placeholder.value = "";
+  placeholder.textContent = existingProjects.length ? "Choose an existing project…" : "No exported projects yet";
+  els.projectSelect.append(placeholder);
+  for (const item of existingProjects) {
+    const option = document.createElement("option");
+    option.value = item.project_slug;
+    option.textContent = `${item.project_name} · ${item.project_slug}`;
+    els.projectSelect.append(option);
+  }
+  syncProjectSelection(
+    preferredSlug
+      || activeProject?.project_slug
+      || previewProjectSlug(project?.project_name || ""),
+  );
+}
+
+async function activateProject(selected) {
+  activeProject = selected;
+  clearTimeout(saveTimer);
+  source = null;
+  project = null;
+  selectedClipId = null;
+  editingClipId = null;
+  exportStatuses = {};
+  els.sourceSelect.value = "";
+  els.video.removeAttribute("src");
+  els.video.load();
+  els.workspace.hidden = true;
+  els.empty.hidden = false;
+  els.sourceTools.hidden = false;
+  els.uploadPanel.hidden = false;
+  els.shortcutFooter.hidden = false;
+  syncProjectSelection(selected.project_slug);
+  await loadFiles();
+}
+
+function openCreateProjectDialog() {
+  els.newProjectName.value = "New Project";
+  els.newProjectSlugPreview.textContent = "new_project";
+  els.createProjectError.textContent = "";
+  els.createProjectDialog.showModal();
+  els.newProjectName.select();
+}
+
+async function createAndSelectProject(event) {
+  event.preventDefault();
+  const projectName = els.newProjectName.value.trim();
+  const slug = previewProjectSlug(projectName);
+  if (!slug) {
+    els.createProjectError.textContent = "Enter a project name containing at least one letter or number.";
+    return;
+  }
+  try {
+    const created = await api("/api/projects", {
+      method: "POST",
+      body: JSON.stringify({project_name: projectName}),
+    });
+    await loadExistingProjects(created.project_slug);
+    els.createProjectDialog.close();
+    els.projectError.textContent = "";
+    await activateProject(created);
+  } catch (error) {
+    els.createProjectError.textContent = error.message;
+  }
+}
+
+function scheduleProjectSave() {
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => {
+    saveProject().catch((error) => { els.projectError.textContent = error.message; });
+  }, 500);
+}
+
 async function saveProject() {
   clearTimeout(saveTimer);
   if (!project || !source) return;
-  project = await api(`/api/projects/${source.id}`, {method: "PUT", body: JSON.stringify(projectPayload())});
+  const fileId = source.id;
+  const payload = JSON.stringify(projectPayload());
+  await api(`/api/projects/${fileId}`, {method: "PUT", body: payload});
 }
 
 function updateMarkedDuration() {
@@ -380,11 +511,18 @@ function render() {
     row.append(number, detail, actions);
     els.clipList.append(row);
   });
-  els.exportAll.disabled = !ordered.length;
+  els.exportAll.disabled = !ordered.length || !project.project_name.trim();
 }
 
 async function exportAll() {
   if (!project.clips.length) return;
+  project.project_name = els.projectName.value.trim();
+  if (!project.project_name) {
+    els.projectError.textContent = "Project Name is required before export.";
+    els.projectName.focus();
+    render();
+    return;
+  }
   const short = project.clips.filter((clip) => clip.requested_end_s - clip.requested_start_s < 120);
   if (short.length && !confirm(`${short.length} clip(s) are under the recommended 2 minutes. Export anyway?`)) return;
   els.exportAll.disabled = true;
@@ -406,7 +544,10 @@ async function pollExport(statusUrl) {
     exportStatuses = Object.fromEntries(job.clips.map((item) => [item.clip_id, item]));
     els.exportProgress.textContent = job.state === "running" ? `${job.message} · ${job.completed}/${job.total} complete` : job.message;
     render();
-    if (["complete", "failed"].includes(job.state)) return;
+    if (["complete", "failed"].includes(job.state)) {
+      await loadExistingProjects();
+      return;
+    }
     await new Promise((resolve) => setTimeout(resolve, 1000));
   }
 }
@@ -430,6 +571,41 @@ els.addClip.addEventListener("click", addOrUpdateClip);
 els.cancelEdit.addEventListener("click", () => { resetForm(false); render(); });
 els.inTime.addEventListener("input", updateMarkedDuration);
 els.outTime.addEventListener("input", updateMarkedDuration);
+els.projectSelect.addEventListener("change", () => {
+  const selected = existingProjects.find((item) => item.project_slug === els.projectSelect.value);
+  if (!selected) return;
+  activateProject(selected).catch((error) => { els.projectSelect.value = ""; alert(error.message); });
+});
+els.createProjectButton.addEventListener("click", openCreateProjectDialog);
+els.cancelCreateProject.addEventListener("click", () => els.createProjectDialog.close());
+els.newProjectName.addEventListener("input", () => {
+  els.newProjectSlugPreview.textContent = previewProjectSlug(els.newProjectName.value) || "invalid project name";
+  els.createProjectError.textContent = "";
+});
+els.createProjectForm.addEventListener("submit", createAndSelectProject);
+els.projectName.addEventListener("input", () => {
+  if (!project) return;
+  project.project_name = els.projectName.value;
+  activeProject = {
+    project_name: project.project_name,
+    project_slug: previewProjectSlug(project.project_name),
+  };
+  els.projectError.textContent = "";
+  updateProjectSlugPreview();
+  render();
+  scheduleProjectSave();
+});
+els.projectName.addEventListener("change", () => {
+  if (!project) return;
+  project.project_name = els.projectName.value.trim();
+  activeProject = {
+    project_name: project.project_name,
+    project_slug: previewProjectSlug(project.project_name),
+  };
+  els.projectName.value = project.project_name;
+  updateProjectSlugPreview();
+  saveProject().catch((error) => { els.projectError.textContent = error.message; });
+});
 els.retainPreZero.addEventListener("change", () => {
   project.imu_settings.retain_one_pre_zero_sample = els.retainPreZero.checked;
   saveProject().catch((error) => { els.formError.textContent = error.message; });
@@ -459,4 +635,10 @@ document.addEventListener("keydown", (event) => {
   }
 });
 
-loadFiles();
+loadExistingProjects().catch((error) => {
+  els.projectSelect.replaceChildren();
+  const option = document.createElement("option");
+  option.value = "";
+  option.textContent = `Could not load projects: ${error.message}`;
+  els.projectSelect.append(option);
+});
