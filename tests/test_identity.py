@@ -26,6 +26,10 @@ def mp4_box(key: str, payload: bytes) -> bytes:
     return (len(payload) + 8).to_bytes(4, "big") + key.encode("ascii") + payload
 
 
+def extended_mp4_box(key: str, payload: bytes) -> bytes:
+    return b"\x00\x00\x00\x01" + key.encode("ascii") + (len(payload) + 16).to_bytes(8, "big") + payload
+
+
 def gpmf_klv(key: str, type_char: str | None, payload: bytes, struct_size: int = 1) -> bytes:
     repeat = len(payload) // struct_size
     header = key.encode("ascii") + bytes([0 if type_char is None else ord(type_char), struct_size])
@@ -81,6 +85,22 @@ def test_serial_normalization_and_synthetic_header_extraction(tmp_path: Path) ->
     assert metadata.camera_firmware == "H24.01.02.10.00"
 
 
+def test_header_extraction_skips_extended_size_mp4_atoms(tmp_path: Path) -> None:
+    path = tmp_path / "GX010005.MP4"
+    write_gopro_header(path)
+    original = path.read_bytes()
+    first_box_size = int.from_bytes(original[:4], "big")
+    path.write_bytes(
+        original[:first_box_size]
+        + extended_mp4_box("mdat", b"large-file-layout")
+        + original[first_box_size:]
+    )
+
+    metadata = extract_gopro_header_metadata(path)
+
+    assert metadata.camera_serial_number == "C0000000000001"
+
+
 def test_missing_casn_is_explicitly_unresolved(tmp_path: Path) -> None:
     path = tmp_path / "GX010005.MP4"
     write_gopro_header(path, serial=None)
@@ -108,6 +128,14 @@ def test_media_library_keeps_device_registry_at_repository_root(tmp_path: Path) 
     library = MediaLibrary(tmp_path / "media")
     assert library.device_registry.path == DEFAULT_DEVICE_REGISTRY_PATH.resolve()
     assert library.identity_cache_root == library.media_dir / ".egosnip" / "source_identities"
+
+
+def test_identity_work_for_different_sources_does_not_share_one_lock(tmp_path: Path) -> None:
+    library = MediaLibrary(tmp_path / "media")
+    first = library.media_dir / "first.mp4"
+    second = library.media_dir / "second.mp4"
+    assert library._identity_lock_for(first) is library._identity_lock_for(first)
+    assert library._identity_lock_for(first) is not library._identity_lock_for(second)
 
 
 def test_device_registry_allocates_reuses_and_never_recycles(tmp_path: Path) -> None:

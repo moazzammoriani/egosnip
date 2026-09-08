@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .media import MediaLibrary, Source
+from .media import MediaLibrary, Source, configured_media_dir
 from .models import ProjectState
 
 
@@ -200,10 +200,10 @@ def main() -> None:
     parser.add_argument(
         "--media-dir",
         type=Path,
-        default=Path(os.environ.get("MEDIA_DIR", Path.cwd() / "media")),
+        default=None,
     )
     args = parser.parse_args()
-    results = migrate_media_dir(args.media_dir)
+    results = migrate_media_dir(configured_media_dir(args.media_dir))
     print(json.dumps({"migrated": results}, indent=2))
 
 

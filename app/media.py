@@ -24,7 +24,16 @@ class MediaError(RuntimeError):
     pass
 
 
-DEFAULT_DEVICE_REGISTRY_PATH = Path(__file__).resolve().parent.parent / "devices.json"
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_DEVICE_REGISTRY_PATH = PROJECT_ROOT / "devices.json"
+DEFAULT_MEDIA_DIR = PROJECT_ROOT / "media"
+
+
+def configured_media_dir(explicit: Path | None = None) -> Path:
+    if explicit is not None:
+        return explicit
+    configured = os.environ.get("MEDIA_DIR")
+    return Path(configured).expanduser() if configured else DEFAULT_MEDIA_DIR
 
 
 def safe_file_id(recording_fingerprint: str) -> str:
@@ -147,8 +156,14 @@ class MediaLibrary:
         self.device_registry = DeviceRegistry(
             device_registry_path or DEFAULT_DEVICE_REGISTRY_PATH
         )
-        self._identity_lock = threading.RLock()
+        self._identity_locks_guard = threading.Lock()
+        self._identity_locks: dict[str, threading.RLock] = {}
         self.discovery_errors: list[dict[str, str]] = []
+
+    def _identity_lock_for(self, path: Path) -> threading.RLock:
+        key = os.fspath(path.resolve())
+        with self._identity_locks_guard:
+            return self._identity_locks.setdefault(key, threading.RLock())
 
     def _inside_media_dir(self, path: Path) -> bool:
         try:
@@ -200,7 +215,7 @@ class MediaLibrary:
         use_cache: bool = True,
         write_cache: bool = True,
     ) -> SourceIdentity:
-        with self._identity_lock:
+        with self._identity_lock_for(path):
             cache_path = self._identity_cache_path(path)
             if use_cache and cache_path.exists():
                 try:

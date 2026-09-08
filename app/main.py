@@ -14,7 +14,7 @@ from starlette.concurrency import run_in_threadpool
 
 from .export import ClipExporter
 from .identity import IdentityError
-from .media import MediaError, MediaLibrary, probe_media
+from .media import MediaError, MediaLibrary, configured_media_dir, probe_media
 from .models import CreateProjectRequest, ExportRequest, ProjectState
 from .projects import ExportProjectCatalog, ProjectStore, project_slug
 from .telemetry import TelemetryCache, TelemetryError
@@ -211,8 +211,7 @@ class ProxyJobs:
 
 
 def create_app(media_dir: Path | None = None) -> FastAPI:
-    configured_dir = media_dir or Path(os.environ.get("MEDIA_DIR", Path.cwd() / "media"))
-    library = MediaLibrary(configured_dir)
+    library = MediaLibrary(configured_media_dir(media_dir))
     projects = ProjectStore()
     project_catalog = ExportProjectCatalog(library.exports_root)
     jobs = ExportJobs(library, projects)

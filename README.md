@@ -59,7 +59,7 @@ uv run python -m app
 
 EgoSnip uses native Windows file locking for `devices.json`; no WSL environment is required.
 
-Use **Upload MP4s** or drop multiple MP4s onto the Media Library panel. Each raw video body is streamed to one temporary file, checked with FFprobe, assigned a physical device and recording identity from its original GoPro metadata, and atomically moved to `MEDIA_DIR/sources/<DEVICE_ID>/<SOURCE_ID>/<ORIGINAL_FILENAME>`. Same-named files from different cameras can coexist; existing files are never overwritten. Existing MP4s directly inside `MEDIA_DIR` are also discovered. Backend-generated IDs are used in URLs, and client-provided filesystem paths are never accepted.
+Use **Upload MP4s** or drop multiple MP4s onto the Media Library panel. Each raw video body is streamed to one temporary file, checked with FFprobe, assigned a physical device and recording identity from its original GoPro metadata, and atomically moved to `MEDIA_DIR/sources/<DEVICE_ID>/<SOURCE_ID>/<ORIGINAL_FILENAME>`. The UI distinguishes network transfer from server-side video/identity validation. The identity walker supports 64-bit MP4 atom sizes used by recordings larger than 4 GB. Same-named files from different cameras can coexist; existing files are never overwritten. Existing MP4s directly inside `MEDIA_DIR` are also discovered. Backend-generated IDs are used in URLs, and client-provided filesystem paths are never accepted.
 
 ## Operator workflow
 

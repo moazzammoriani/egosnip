@@ -179,7 +179,9 @@ function uploadOne(file, position, total) {
     request.upload.addEventListener("progress", (event) => {
       const percent = event.lengthComputable ? Math.round((event.loaded / event.total) * 100) : 0;
       els.uploadStatus.className = "upload-status active";
-      els.uploadStatus.textContent = `Uploading ${position}/${total}: ${file.name} · ${percent}%`;
+      els.uploadStatus.textContent = percent >= 100
+        ? `Upload ${position}/${total} received: ${file.name} · validating video and GoPro identity…`
+        : `Uploading ${position}/${total}: ${file.name} · ${percent}%`;
     });
     request.addEventListener("load", () => {
       let payload = {};

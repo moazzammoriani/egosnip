@@ -23,3 +23,8 @@ def test_frontend_uses_egosnip_branding() -> None:
     html = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
     assert "<title>EgoSnip</title>" in html
     assert "<h1>EgoSnip</h1>" in html
+
+
+def test_upload_reports_server_side_validation_after_transfer() -> None:
+    javascript = (ROOT / "static" / "app.js").read_text(encoding="utf-8")
+    assert "validating video and GoPro identity" in javascript

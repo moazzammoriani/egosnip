@@ -183,6 +183,66 @@ class GoProHeaderMetadata:
     camera_creation_timestamp: int | None
 
 
+@dataclass(frozen=True)
+class MP4Box:
+    key: str
+    offset: int
+    size: int
+    header_size: int
+
+
+def _find_mp4_boxes(
+    handle: Any,
+    offset: int,
+    size: int,
+    box_path: list[str],
+) -> list[MP4Box]:
+    """Walk bounded MP4 atoms, including 64-bit and end-of-file sizes."""
+    boxes: list[MP4Box] = []
+    end = offset + size
+    while offset < end:
+        remaining = end - offset
+        if remaining < 8:
+            raise IdentityError("GoPro MP4 contains a truncated box header")
+        handle.seek(offset)
+        header = handle.read(8)
+        if len(header) != 8:
+            raise IdentityError("GoPro MP4 ended while reading a box header")
+        size_32 = int.from_bytes(header[:4], "big")
+        try:
+            key = header[4:8].decode("ascii")
+        except UnicodeDecodeError as exc:
+            raise IdentityError("GoPro MP4 contains an invalid box type") from exc
+        header_size = 8
+        if size_32 == 1:
+            extended = handle.read(8)
+            if len(extended) != 8:
+                raise IdentityError("GoPro MP4 contains a truncated extended-size box")
+            box_size = int.from_bytes(extended, "big")
+            header_size = 16
+        elif size_32 == 0:
+            box_size = remaining
+        else:
+            box_size = size_32
+        if box_size < header_size or box_size > remaining:
+            raise IdentityError(f"GoPro MP4 contains an invalid {key!r} box size")
+        box = MP4Box(key, offset, box_size, header_size)
+        if key == box_path[0]:
+            if len(box_path) == 1:
+                boxes.append(box)
+            else:
+                boxes.extend(
+                    _find_mp4_boxes(
+                        handle,
+                        offset + header_size,
+                        box_size - header_size,
+                        box_path[1:],
+                    )
+                )
+        offset += box_size
+    return boxes
+
+
 def _gpmf_payload_bytes(handle: Any, box: Any) -> bytes:
     handle.seek(box.offset + 8)
     return handle.read(box.struct_size * box.repeat)
@@ -197,16 +257,21 @@ def extract_gopro_header_metadata(
 ) -> GoProHeaderMetadata:
     """Read the GoPro global-settings GPMF header from the original MP4."""
     try:
-        from telemetrik.parser import get_boxes, get_gpmf_boxes
+        from telemetrik.parser import get_gpmf_boxes
     except ImportError as exc:
         raise IdentityError("telemetrik is required to read GoPro identity metadata") from exc
 
     try:
         with path.open("rb") as handle:
             size = path.stat().st_size
-            gpmf_atoms = get_boxes(handle, 0, size, ["moov", "udta", "GPMF"])
+            gpmf_atoms = _find_mp4_boxes(handle, 0, size, ["moov", "udta", "GPMF"])
             for atom in gpmf_atoms:
-                devices = get_gpmf_boxes(handle, atom.offset + 8, atom.size - 8, ["DEVC"])
+                devices = get_gpmf_boxes(
+                    handle,
+                    atom.offset + atom.header_size,
+                    atom.size - atom.header_size,
+                    ["DEVC"],
+                )
                 for device in devices:
                     names = get_gpmf_boxes(handle, device.offset, device.size, ["DEVC", "DVNM"])
                     if not names or _gpmf_ascii(handle, names[0]).lower() != "global settings":
