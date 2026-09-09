@@ -8,8 +8,9 @@ import threading
 from bisect import bisect_left
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, BinaryIO, Iterable
 
+from .identity import _find_mp4_boxes
 from .media import MediaLibrary, Source
 
 
@@ -37,6 +38,134 @@ class MasterTelemetry:
     accelerometer: SensorData
     gyroscope: SensorData
     parser: str = "telemetrik"
+
+
+def _read_uint(handle: BinaryIO, byte_count: int) -> int:
+    raw = handle.read(byte_count)
+    if len(raw) != byte_count:
+        raise TelemetryError("GoPro MP4 ended while reading a telemetry sample table")
+    return int.from_bytes(raw, "big")
+
+
+def _telemetrik_get_samples(handle: BinaryIO, stbl: Any) -> list[Any]:
+    """Read GPMF samples from 32- or 64-bit MP4 chunk tables.
+
+    telemetrik 0.1.0 only understands ``stco`` and treats each chunk offset as
+    one sample offset. Large GoPro files use ``co64``; honor ``stsc`` as well so
+    multiple samples in a chunk resolve to their actual byte positions.
+    """
+    from telemetrik.parser import Sample
+
+    size_boxes = _find_mp4_boxes(handle, stbl.offset, stbl.size, ["stbl", "stsz"])
+    if not size_boxes:
+        raise TelemetryError("GPMF track has no sample-size table")
+    size_box = size_boxes[0]
+    handle.seek(size_box.offset + size_box.header_size + 4)
+    fixed_size = _read_uint(handle, 4)
+    sample_count = _read_uint(handle, 4)
+    if fixed_size:
+        sample_sizes = [fixed_size] * sample_count
+    else:
+        sample_sizes = [_read_uint(handle, 4) for _ in range(sample_count)]
+
+    offset_boxes = _find_mp4_boxes(handle, stbl.offset, stbl.size, ["stbl", "stco"])
+    offset_width = 4
+    if not offset_boxes:
+        offset_boxes = _find_mp4_boxes(handle, stbl.offset, stbl.size, ["stbl", "co64"])
+        offset_width = 8
+    if not offset_boxes:
+        raise TelemetryError("GPMF track has no chunk-offset table")
+    offset_box = offset_boxes[0]
+    handle.seek(offset_box.offset + offset_box.header_size + 4)
+    chunk_count = _read_uint(handle, 4)
+    chunk_offsets = [_read_uint(handle, offset_width) for _ in range(chunk_count)]
+
+    stsc_boxes = _find_mp4_boxes(handle, stbl.offset, stbl.size, ["stbl", "stsc"])
+    if not stsc_boxes:
+        raise TelemetryError("GPMF track has no sample-to-chunk table")
+    stsc = stsc_boxes[0]
+    handle.seek(stsc.offset + stsc.header_size + 4)
+    entry_count = _read_uint(handle, 4)
+    chunk_layout = [
+        (_read_uint(handle, 4), _read_uint(handle, 4), _read_uint(handle, 4))
+        for _ in range(entry_count)
+    ]
+    if not chunk_layout or chunk_layout[0][0] != 1:
+        raise TelemetryError("GPMF sample-to-chunk table is invalid")
+
+    sample_offsets: list[int] = []
+    size_index = 0
+    layout_index = 0
+    for chunk_number, chunk_offset in enumerate(chunk_offsets, start=1):
+        while (
+            layout_index + 1 < len(chunk_layout)
+            and chunk_layout[layout_index + 1][0] <= chunk_number
+        ):
+            layout_index += 1
+        samples_per_chunk = chunk_layout[layout_index][1]
+        sample_offset = chunk_offset
+        for _ in range(samples_per_chunk):
+            if size_index >= len(sample_sizes):
+                raise TelemetryError("GPMF chunk table contains too many samples")
+            sample_offsets.append(sample_offset)
+            sample_offset += sample_sizes[size_index]
+            size_index += 1
+    if size_index != len(sample_sizes):
+        raise TelemetryError("GPMF chunk table does not contain every sample")
+
+    sample_durations: list[int] = []
+    stts_boxes = _find_mp4_boxes(handle, stbl.offset, stbl.size, ["stbl", "stts"])
+    if stts_boxes:
+        stts = stts_boxes[0]
+        handle.seek(stts.offset + stts.header_size + 4)
+        for _ in range(_read_uint(handle, 4)):
+            count = _read_uint(handle, 4)
+            delta = _read_uint(handle, 4)
+            sample_durations.extend([delta] * count)
+
+    composition_offsets = [0] * len(sample_sizes)
+    ctts_boxes = _find_mp4_boxes(handle, stbl.offset, stbl.size, ["stbl", "ctts"])
+    if ctts_boxes:
+        ctts = ctts_boxes[0]
+        handle.seek(ctts.offset + ctts.header_size)
+        version = _read_uint(handle, 1)
+        handle.read(3)
+        composition_index = 0
+        for _ in range(_read_uint(handle, 4)):
+            count = _read_uint(handle, 4)
+            raw_offset = _read_uint(handle, 4)
+            if version == 1 and raw_offset >= 2**31:
+                raw_offset -= 2**32
+            for _ in range(count):
+                if composition_index < len(composition_offsets):
+                    composition_offsets[composition_index] = raw_offset
+                    composition_index += 1
+
+    samples = []
+    current_dts = 0
+    for index, (sample_offset, sample_size) in enumerate(zip(sample_offsets, sample_sizes)):
+        samples.append(
+            Sample(
+                sample_offset,
+                sample_size,
+                pts=current_dts + composition_offsets[index],
+                dts=current_dts,
+            )
+        )
+        if index < len(sample_durations):
+            current_dts += sample_durations[index]
+    return samples
+
+
+def _extract_all_telemetry(path: Path) -> dict[str, Any]:
+    """Run telemetrik with large-file-safe MP4 table readers."""
+    try:
+        from telemetrik import parser as telemetrik_parser
+    except ImportError as exc:
+        raise TelemetryError("telemetrik is not installed; run `uv sync`") from exc
+    telemetrik_parser.get_boxes = _find_mp4_boxes
+    telemetrik_parser.get_samples = _telemetrik_get_samples
+    return telemetrik_parser.extract_all_telemetry(path, streams=["ACCL", "GYRO"])
 
 
 def estimated_sample_rate(samples: Iterable[SensorSample]) -> float | None:
@@ -136,11 +265,9 @@ class TelemetryCache:
 
     def _extract(self, source: Source) -> MasterTelemetry:
         try:
-            from telemetrik import extract_all_telemetry
-        except ImportError as exc:
-            raise TelemetryError("telemetrik is not installed; run `uv sync`") from exc
-        try:
-            raw = extract_all_telemetry(source.path, streams=["ACCL", "GYRO"])
+            raw = _extract_all_telemetry(source.path)
+        except TelemetryError:
+            raise
         except Exception as exc:
             raise TelemetryError(f"telemetrik could not parse {source.filename}: {exc}") from exc
 

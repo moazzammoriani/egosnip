@@ -5,9 +5,10 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from app.main import ProxyJobs, create_app
+from app.main import ExportJobs, ProxyJobs, create_app
 from app.identity import SourceIdentity
 from app.media import MediaLibrary, Source
+from app.models import Clip, ProjectState
 
 
 def make_video(path: Path) -> None:
@@ -125,6 +126,60 @@ def test_proxy_jobs_deduplicate_a_running_source(tmp_path: Path) -> None:
     assert first["state"] in {"queued", "generating"}
     assert second["state"] in {"queued", "generating"}
     assert calls == 1
+
+
+def test_export_jobs_deduplicate_a_running_source(tmp_path: Path) -> None:
+    media = tmp_path / "media"
+    media.mkdir()
+    source_path = media / "GXTEST01.MP4"
+    source_path.write_bytes(b"placeholder")
+    library = MediaLibrary(media)
+    source = Source(
+        file_id="a" * 20,
+        filename="GXTEST01.MP4",
+        source_id="GP-000001_GXTEST01_A72F91C3",
+        source_file_stem="GXTEST01",
+        recording_id="A72F91C3",
+        recording_fingerprint="a" * 64,
+        device_id="GP-000001",
+        camera_serial_number="C0000000000001",
+        camera_model="Synthetic GoPro",
+        camera_firmware="TEST",
+        path=source_path,
+        cache_dir=media / ".snipper_cache" / "source",
+    )
+    library.get = lambda _: source  # type: ignore[method-assign]
+    project = ProjectState(
+        project_name="Test Project",
+        source_file=source.filename,
+        source_id=source.source_id,
+        device_id=source.device_id,
+        camera_serial_number=source.camera_serial_number,
+        recording_id=source.recording_id,
+        clips=[Clip(
+            id=f"{source.source_id}_001",
+            clip_index=1,
+            task_label="Test",
+            requested_start_s=0,
+            requested_end_s=1,
+        )],
+        next_clip_index=2,
+    )
+    jobs = ExportJobs(library, object())  # type: ignore[arg-type]
+    started = threading.Event()
+    release = threading.Event()
+
+    def hold_export(*args) -> None:
+        started.set()
+        release.wait(timeout=2)
+
+    jobs._run = hold_export  # type: ignore[method-assign]
+    first = jobs.start(source.file_id, project, None)
+    assert started.wait(timeout=2)
+    second = jobs.start(source.file_id, project, None)
+    release.set()
+
+    assert second == first
 
 
 def test_project_api_requires_persists_and_edits_project_name(tmp_path: Path) -> None:

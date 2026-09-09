@@ -30,6 +30,7 @@ class ExportJobs:
         self.telemetry = TelemetryCache(library)
         self.exporter = ClipExporter(library, self.telemetry)
         self._jobs: dict[str, dict[str, Any]] = {}
+        self._active_by_source: dict[str, str] = {}
         self._lock = threading.Lock()
 
     def start(self, source_file_id: str, project: ProjectState, clip_ids: list[str] | None) -> str:
@@ -62,7 +63,13 @@ class ExportJobs:
             ],
         }
         with self._lock:
+            active_id = self._active_by_source.get(source_file_id)
+            if active_id is not None:
+                active = self._jobs.get(active_id)
+                if active and active["state"] in {"queued", "running"}:
+                    return active_id
             self._jobs[job_id] = job
+            self._active_by_source[source_file_id] = job_id
         worker = threading.Thread(
             target=self._run,
             args=(job_id, source_file_id, project, selected),
@@ -97,7 +104,11 @@ class ExportJobs:
             metadata = self.library.metadata(source)
             master = None
             telemetry_error = None
-            self._update(job_id, state="running", message="Extracting or loading master IMU")
+            self._update(
+                job_id,
+                state="running",
+                message="Extracting master IMU (first export can take a few minutes)",
+            )
             if not metadata.get("gpmd_present"):
                 telemetry_error = "Source has no gpmd stream; external ACCL/GYRO telemetry is unavailable"
             else:
@@ -137,6 +148,10 @@ class ExportJobs:
             self._update(job_id, state="complete", message=message)
         except Exception as exc:
             self._update(job_id, state="failed", message=str(exc))
+        finally:
+            with self._lock:
+                if self._active_by_source.get(source_file_id) == job_id:
+                    del self._active_by_source[source_file_id]
 
 
 class ProxyJobs:
